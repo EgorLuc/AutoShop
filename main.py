@@ -1,7 +1,7 @@
 import asyncio
 import json
 import logging
-from aiogram import Bot, Dispatcher, types
+from aiogram import Bot, Dispatcher, types, F
 from aiogram.filters import Command
 from aiogram.utils.keyboard import InlineKeyboardBuilder, InlineKeyboardButton
 from aiogram.fsm.context import FSMContext
@@ -47,6 +47,9 @@ class AddPaymentButtonState(StatesGroup):
     waiting_for_level_name = State()
     waiting_for_button_text = State()
 
+class ListButtomstate(StatesGroup):
+    waiting_for_level_name = State()
+
 def load_config():
     try:
         with open(CONFIG_FILE, 'r', encoding='utf-8') as f:
@@ -73,6 +76,21 @@ def build_keyboard(buttons):
         builder.adjust(1)
     return builder.as_markup(width=1)
 
+def keyboardadmin():
+    buttons = [
+        [types.InlineKeyboardButton(text="Добавить уровень", callback_data="add_level")],
+        [types.InlineKeyboardButton(text="Изменить уровень", callback_data="edit_level")],
+        [types.InlineKeyboardButton(text="Удалить уровень", callback_data="delete_level")],
+        [types.InlineKeyboardButton(text="Добавить кнопку", callback_data="add_button")],
+        [types.InlineKeyboardButton(text="Добавить кнопку ссылку", callback_data="add_button_with_link")],
+        [types.InlineKeyboardButton(text="Добавить кнопку оплаты", callback_data="add_payment_button")],
+        [types.InlineKeyboardButton(text="Удалить кнопку", callback_data="delete_button")], 
+        [types.InlineKeyboardButton(text="Посмотреть уровни", callback_data="list_levels")], 
+        [types.InlineKeyboardButton(text="Посмотреть кнопки", callback_data="list_buttons")], 
+        [types.InlineKeyboardButton(text="Помощь", callback_data="help")]
+    ]
+    keyboard = types.InlineKeyboardMarkup(inline_keyboard=buttons)
+    return keyboard
 
 @dp.message(Command(commands=["start"]))
 async def user_start(message: types.Message):
@@ -85,41 +103,28 @@ async def user_start(message: types.Message):
     level = levels[first_level_name]
     await message.answer(level['message'], reply_markup=build_keyboard(level.get('buttons', [])))
 
-@dp.callback_query()
-async def handle_callback(callback: types.CallbackQuery):
-    data = callback.data
-    config = load_config()
-
-    if data.startswith("go_"):
-        target_level = data[3:]
-        level = config['levels'].get(target_level)
-        if level:
-            await callback.message.edit_text(level['message'], reply_markup=build_keyboard(level.get('buttons', [])))
-            await callback.answer()
-        else:
-            await callback.answer("Уровень не найден.", show_alert=True)
-
-    elif data.startswith("buy_"):
-        product_info = data[4:]
-        user_id = callback.from_user.id
-        username = callback.from_user.username or "Не указано"
-        full_name = callback.from_user.full_name
-        notification_text = (
-            f"Пользователь @{username} (ID: {user_id}, Имя: {full_name}) хочет купить:\n{product_info}"
-        )
-        await bot.send_message(NOTIFICATION_CHAT_ID, notification_text)
-        await callback.answer("Ваш запрос на покупку отправлен администратору.", show_alert=True)
-
-    else:
-        await callback.answer("Неизвестная кнопка.", show_alert=True)
-
-
-@dp.message(Command(commands=["add_level"]))
-async def add_level_command(message: types.Message, state: FSMContext):
+@dp.message(Command(commands=["inline_mode"]))
+async def inline_(message: types.Message, state: FSMContext):
     if not is_admin(message.from_user.id):
         await message.answer("Доступ запрещен.")
         return
-    await message.answer("Введите название нового уровня:")
+    await message.answer("Команды доступные вам", reply_markup=keyboardadmin())
+
+@dp.callback_query(F.data == "add_level")
+@dp.message(Command(commands=["add_level"]))
+async def add_level_command(update, state: FSMContext):
+    message_obj = None
+
+    if isinstance(update, types.CallbackQuery):
+        message_obj = update.message
+    elif isinstance(update, types.Message):
+        message_obj = update
+    else:
+        return
+    if not is_admin(update.from_user.id):
+        await message_obj.answer("Доступ запрещен.")
+        return
+    await message_obj.answer("Введите название нового уровня:")
     await state.set_state(AddLevelState.waiting_for_level_name)
 
 @dp.message(AddLevelState.waiting_for_level_name)
@@ -144,17 +149,25 @@ async def add_level_message(message: types.Message, state: FSMContext):
     await message.answer(f"Уровень '{level_name}' успешно добавлен.")
     await state.clear()
 
+@dp.callback_query(F.data == "edit_level")
 @dp.message(Command(commands=["edit_level"]))
-async def edit_level_command(message: types.Message, state: FSMContext):
-    if not is_admin(message.from_user.id):
-        await message.answer("Доступ запрещен.")
+async def edit_level_command(update, state: FSMContext):
+    message_obj = None
+    if isinstance(update, types.CallbackQuery):
+        message_obj = update.message
+    elif isinstance(update, types.Message):
+        message_obj = update
+    else:
+        return
+    if not is_admin(update.from_user.id):
+        await message_obj.answer("Доступ запрещен.")
         return
     config = load_config()
     levels = config['levels']
     if not levels:
-        await message.answer("Уровней нет.")
+        await message_obj.answer("Уровней нет.")
         return
-    await message.answer("Введите название уровня для редактирования:")
+    await message_obj.answer("Введите название уровня для редактирования:")
     await state.set_state(EditLevelState.waiting_for_level_name)
 
 @dp.message(EditLevelState.waiting_for_level_name)
@@ -180,17 +193,25 @@ async def edit_level_message(message: types.Message, state: FSMContext):
     await message.answer(f"Уровень '{level_name}' успешно отредактирован.")
     await state.clear()
 
+@dp.callback_query(F.data == "delete_level")
 @dp.message(Command(commands=["delete_level"]))
-async def delete_level_command(message: types.Message, state: FSMContext):
-    if not is_admin(message.from_user.id):
-        await message.answer("Доступ запрещен.")
+async def delete_level_command(update, state: FSMContext):
+    message_obj = None
+    if isinstance(update, types.CallbackQuery):
+        message_obj = update.message
+    elif isinstance(update, types.Message):
+        message_obj = update
+    else:
+        return
+    if not is_admin(update.from_user.id):
+        await message_obj.answer("Доступ запрещен.")
         return
     config = load_config()
     levels = config['levels']
     if not levels:
-        await message.answer("Уровней нет для удаления.")
+        await message_obj.answer("Уровней нет для удаления.")
         return
-    await message.answer("Введите название уровня для удаления:")
+    await message_obj.answer("Введите название уровня для удаления:")
     await state.set_state(DeleteLevelState.waiting_for_level_name)
 
 @dp.message(DeleteLevelState.waiting_for_level_name)
@@ -206,16 +227,24 @@ async def delete_level_name(message: types.Message, state: FSMContext):
     await message.answer(f"Уровень '{level_name}' и все его кнопки удалены.")
     await state.clear()
 
+@dp.callback_query(F.data == "add_button")
 @dp.message(Command(commands=["add_button"]))
-async def add_button_command(message: types.Message, state: FSMContext):
-    if not is_admin(message.from_user.id):
-        await message.answer("Доступ запрещен.")
+async def add_button_command(update, state: FSMContext):
+    message_obj = None
+    if isinstance(update, types.CallbackQuery):
+        message_obj = update.message
+    elif isinstance(update, types.Message):
+        message_obj = update
+    else:
+        return
+    if not is_admin(update.from_user.id):
+        await message_obj.answer("Доступ запрещен.")
         return
     config = load_config()
     if not config['levels']:
-        await message.answer("Сначала добавьте уровни.")
+        await message_obj.answer("Сначала добавьте уровни.")
         return
-    await message.answer("Введите название уровня, к которому хотите добавить кнопку:")
+    await message_obj.answer("Введите название уровня, к которому хотите добавить кнопку:")
     await state.set_state(AddButtonState.waiting_for_level_name)
 
 @dp.message(AddButtonState.waiting_for_level_name)
@@ -263,16 +292,24 @@ async def add_button_target_level(message: types.Message, state: FSMContext):
     await message.answer(f"Кнопка '{button_text}' добавлена к уровню '{level_name}', ведет на уровень '{target_level}'.")
     await state.clear()
 
+@dp.callback_query(F.data == "add_button_with_link")
 @dp.message(Command(commands=["add_button_with_link"]))
-async def add_button_with_link_command(message: types.Message, state: FSMContext):
-    if not is_admin(message.from_user.id):
-        await message.answer("Доступ запрещен.")
+async def add_button_with_link_command(update, state: FSMContext):
+    message_obj = None
+    if isinstance(update, types.CallbackQuery):
+        message_obj = update.message
+    elif isinstance(update, types.Message):
+        message_obj = update
+    else:
+        return
+    if not is_admin(update.from_user.id):
+        await message_obj.answer("Доступ запрещен.")
         return
     config = load_config()
     if not config['levels']:
-        await message.answer("Сначала добавьте уровни.")
+        await message_obj.answer("Сначала добавьте уровни.")
         return
-    await message.answer("Введите название уровня, к которому хотите добавить кнопку с ссылкой:")
+    await message_obj.answer("Введите название уровня, к которому хотите добавить кнопку с ссылкой:")
     await state.set_state(AddLinkButtonState.waiting_for_level_name)
 
 @dp.message(AddLinkButtonState.waiting_for_level_name)
@@ -314,16 +351,24 @@ async def add_link_button_url(message: types.Message, state: FSMContext):
     await message.answer(f"Кнопка с ссылкой '{button_text}' добавлена к уровню '{level_name}'.")
     await state.clear()
 
+@dp.callback_query(F.data == "add_payment_button")
 @dp.message(Command(commands=["add_payment_button"]))
-async def add_payment_button_command(message: types.Message, state: FSMContext):
-    if not is_admin(message.from_user.id):
-        await message.answer("Доступ запрещен.")
+async def add_payment_button_command(update, state: FSMContext):
+    message_obj = None
+    if isinstance(update, types.CallbackQuery):
+        message_obj = update.message
+    elif isinstance(update, types.Message):
+        message_obj = update
+    else:
+        return
+    if not is_admin(update.from_user.id):
+        await message_obj.answer("Доступ запрещен.")
         return
     config = load_config()
     if not config['levels']:
-        await message.answer("Сначала добавьте уровни.")
+        await message_obj.answer("Сначала добавьте уровни.")
         return
-    await message.answer("Введите название уровня, к которому хотите добавить кнопку оплаты:")
+    await message_obj.answer("Введите название уровня, к которому хотите добавить кнопку оплаты:")
     await state.set_state(AddPaymentButtonState.waiting_for_level_name)
 
 @dp.message(AddPaymentButtonState.waiting_for_level_name)
@@ -353,11 +398,18 @@ async def add_payment_button_text(message: types.Message, state: FSMContext):
     save_config(config)
     await message.answer(f"Кнопка оплаты '{button_text}' добавлена к уровню '{level_name}'.")
     await state.clear()
-
+@dp.callback_query(F.data == "help")
 @dp.message(Command(commands=["help"]))
-async def help_command(message: types.Message):
-    if not is_admin(message.from_user.id):
-        await message.answer("Доступ запрещен.")
+async def help_command(update):
+    message_obj = None
+    if isinstance(update, types.CallbackQuery):
+        message_obj = update.message
+    elif isinstance(update, types.Message):
+        message_obj = update
+    else:
+        return
+    if not is_admin(update.from_user.id):
+        await message_obj.answer("Доступ запрещен.")
         return
 
     help_text = (
@@ -372,30 +424,50 @@ async def help_command(message: types.Message):
         "/list_levels - Показать список всех уровней\n"
         "/list_buttons - Показать кнопки выбранного уровня\n"
         "/help - Показать это сообщение помощи\n"
+        "/inline_mode - Управление с помощью инлайн-кнопок\n"
     )
-    await message.answer(help_text)
+    await message_obj.answer(help_text)
 
+@dp.callback_query(F.data == "list_levels")
 @dp.message(Command(commands=["list_levels"]))
-async def list_levels_command(message: types.Message):
+async def list_levels_command(update):
+    message_obj = None
+    if isinstance(update, types.CallbackQuery):
+        message_obj = update.message
+    elif isinstance(update, types.Message):
+        message_obj = update
+    else:
+        return
+    if not is_admin(update.from_user.id):
+        await message_obj.answer("Доступ запрещен.")
+        return
     config = load_config()
     levels = config.get('levels', {})
     if not levels:
-        await message.answer("Уровней нет.")
+        await message_obj.answer("Уровней нет.")
         return
     text = "Список уровней:\n"
     for level_name, level in levels.items():
         text += f"- {level_name} (сообщение: {len(level['message'])} символов, кнопок: {len(level.get('buttons', []))})\n"
-    await message.answer(text)
+    await message_obj.answer(text)
 
+@dp.callback_query(F.data == "list_buttons")
 @dp.message(Command(commands=["list_buttons"]))
-async def list_buttons_command(message: types.Message, state: FSMContext):
-    if not is_admin(message.from_user.id):
-        await message.answer("Доступ запрещен.")
+async def list_buttons_command(update, state: FSMContext):
+    message_obj = None
+    if isinstance(update, types.CallbackQuery):
+        message_obj = update.message
+    elif isinstance(update, types.Message):
+        message_obj = update
+    else:
         return
-    await message.answer("Введите название уровня, чтобы посмотреть его кнопки:")
-    await state.set_state(DeleteButtonState.waiting_for_level_name)
+    if not is_admin(update.from_user.id):
+        await message_obj.answer("Доступ запрещен.")
+        return
+    await message_obj.answer("Введите название уровня, чтобы посмотреть его кнопки:")
+    await state.set_state(ListButtomstate.waiting_for_level_name)
 
-@dp.message(DeleteButtonState.waiting_for_level_name)
+@dp.message(ListButtomstate.waiting_for_level_name)
 async def list_buttons_level_name(message: types.Message, state: FSMContext):
     level_name = message.text.strip()
     config = load_config()
@@ -414,16 +486,21 @@ async def list_buttons_level_name(message: types.Message, state: FSMContext):
     await message.answer(text)
     await state.clear()
 
+@dp.callback_query(F.data == "delete_button")
 @dp.message(Command(commands=["delete_button"]))
-async def delete_button_command(message: types.Message, state: FSMContext):
-    if not is_admin(message.from_user.id):
-        await message.answer("Доступ запрещен.")
+async def delete_button_command(update, state: FSMContext):
+    message_obj = None
+    if isinstance(update, types.CallbackQuery):
+        message_obj = update.message
+    elif isinstance(update, types.Message):
+        message_obj = update
+    else:
         return
     config = load_config()
     if not config['levels']:
-        await message.answer("Уровней нет.")
+        await message_obj.answer("Уровней нет.")
         return
-    await message.answer("Введите название уровня, из которого хотите удалить кнопку:")
+    await message_obj.answer("Введите название уровня, из которого хотите удалить кнопку:")
     await state.set_state(DeleteButtonState.waiting_for_level_name)
 
 @dp.message(DeleteButtonState.waiting_for_level_name)
@@ -465,6 +542,34 @@ async def delete_button_index(message: types.Message, state: FSMContext):
     save_config(config)
     await message.answer(f"Кнопка '{removed['text']}' удалена из уровня '{level_name}'.")
     await state.clear()
+
+@dp.callback_query()
+async def handle_callback(callback: types.CallbackQuery):
+    data = callback.data
+    config = load_config()
+
+    if data.startswith("go_"):
+        target_level = data[3:]
+        level = config['levels'].get(target_level)
+        if level:
+            await callback.message.edit_text(level['message'], reply_markup=build_keyboard(level.get('buttons', [])))
+            await callback.answer()
+        else:
+            await callback.answer("Уровень не найден.", show_alert=True)
+
+    elif data.startswith("buy_"):
+        product_info = data[4:]
+        user_id = callback.from_user.id
+        username = callback.from_user.username or "Не указано"
+        full_name = callback.from_user.full_name
+        notification_text = (
+            f"Пользователь @{username} (ID: {user_id}, Имя: {full_name}) хочет купить:\n{product_info}"
+        )
+        await bot.send_message(NOTIFICATION_CHAT_ID, notification_text)
+        await callback.answer("Ваш запрос на покупку отправлен администратору.", show_alert=True)
+
+    else:
+        await callback.answer("Неизвестная кнопка.", show_alert=True)
 
 async def main():
     await dp.start_polling(bot)
